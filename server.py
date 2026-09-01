@@ -30,6 +30,12 @@ def get_host_port(parsed_http):
         
     raise ValueError("No se encontró el header Host")
 
+def add_header(parsed_http, header_name, header_value):
+    parsed_http["headers"] = (
+        parsed_http["headers"] + "\r\n" + f"{header_name}: {header_value}"
+    )
+    return parsed_http
+
 # esta función se encarga de recibir el mensaje completo desde el cliente
 # en caso de que el mensaje sea más grande que el tamaño del buffer 'buff_size', esta función va esperar a que
 # llegue el resto. Para saber si el mensaje ya llegó por completo, se busca el caracter de fin de mensaje (parte de nuestro protocolo inventado)
@@ -113,6 +119,7 @@ if __name__ == "__main__":
             blocked_sites = config["blocked"]
             proxy_ip = config["proxy_ip"]
             proxy_port = config["proxy_port"]
+            student_name = config["student_name"]
 
     else:
         print("Error: Debe ingresar la ruta del archivo JSON. ")
@@ -193,8 +200,13 @@ if __name__ == "__main__":
 
         prsv_socket.connect((host, port))
 
-        # reenviamos exactamente el request recibido
-        prsv_socket.sendall(recv_message)
+        # agregamos nuestro header antes de reenviar al servidor real
+        parsed_http = add_header(parsed_http, "X-ElQuePregunta", student_name)
+        request_to_send = create_HTTP_message(parsed_http)
+
+        prsv_socket.sendall(request_to_send)
+
+        ################### agregar al config.json: "student_name": "..." ###########################
 
         # recibimos la respuesta del servidor
         # y la enviamos directamente al cliente
