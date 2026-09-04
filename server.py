@@ -36,24 +36,80 @@ def add_header(parsed_http, header_name, header_value):
     )
     return parsed_http
 
-# esta función se encarga de recibir el mensaje completo desde el cliente
-# en caso de que el mensaje sea más grande que el tamaño del buffer 'buff_size', esta función va esperar a que
-# llegue el resto. Para saber si el mensaje ya llegó por completo, se busca el caracter de fin de mensaje (parte de nuestro protocolo inventado)
+def get_content_length(raw_headers_bytes):
+    # busca el header content-length en bytes crudos
+    headers_text = raw_headers_bytes.decode(errors="ignore")
+    for line in headers_text.split("\r\n"):
+        if line.lower().startswith("content-length:"):
+            return int(line.split(":", 1)[1].strip())
+    return None
 
-def receive_full_message(connection_socket, buff_size, end_sequence):
+def replace_forbidden_words(body, forbidden_words):
+    # forbidden_words es una lista de dicts de una sola clave: {"palabra": "reemplazo"}
+    for word_dict in forbidden_words:
+        for word, replacement in word_dict.items():
+            body = body.replace(word, replacement)
+    return body
+
+def set_content_length(parsed_http, new_length):
+    # recalcula content-length despues de modificar el body
+    new_lines = []
+    for line in parsed_http["headers"].split("\r\n"):
+        if line.lower().startswith("content-length:"):
+            new_lines.append(f"Content-Length: {new_length}")
+        else:
+            new_lines.append(line)
+    parsed_http["headers"] = "\r\n".join(new_lines)
+    return parsed_http
+
+# esta función recibe un mensaje HTTP completo sin importar si el buffer de 
+# recepción 'buff_size' es más chico que el mensaje total.
+# Primero acumula bytes hasta encontrar "\r\n\r\n" y luego si el HEAD trae content-length sigue leyendo hasta 
+# completar exactamente esa cantidad de bytes de BODY o hasta que el otro lado cierre la conexión
+# si se pide explícitamente con read_body_until_close.
+
+def receive_full_message(connection_socket, buff_size, end_sequence, read_body_until_close=False):
     end_bytes = end_sequence.encode()
-    # recibimos la primera parte del mensaje
-    full_message = connection_socket.recv(buff_size)
+    full_message = b""
 
-    # verificamos si la secuencia de fin ya está en el buffer
+    # seguimos pidiendo mas bytes de a buff_size hasta encontrar
+    # "\r\n\r\n". 
+    # Esto funciona sin importar si buff_size es mas chico
+    # que el total de headers, porque no dejamos de iterar hasta encontrar
+    # el separador, asi sabemos que el HEAD llego completo
     while not contains_end_of_message(full_message, end_bytes):
-        recv_message = connection_socket.recv(buff_size)
-        if not recv_message:
-            break
-        full_message += recv_message
+        chunk = connection_socket.recv(buff_size)
+        if not chunk:
+            return full_message
+        full_message += chunk
 
-    # Retornamos directamente los bytes completados sin alterar el mensaje
-    return full_message
+    header_end_index = full_message.find(end_bytes) + len(end_bytes)
+    headers_part = full_message[:header_end_index]
+    body_part = full_message[header_end_index:]
+
+    # mientras leiamos el HEAD puede que ya haya llegado
+    # parte o todo el body pegado en el mismo recv. Miramos
+    # content-length para saber cuanto body falta
+    content_length = get_content_length(headers_part)
+
+    if content_length is not None:
+        # sabemos exactamente cuantos bytes de body esperar
+        while len(body_part) < content_length:
+            chunk = connection_socket.recv(buff_size)
+            if not chunk:
+                break
+            body_part += chunk
+    elif read_body_until_close:
+        # no hay content-length
+        # seguimos leyendo hasta que el otro lado cierre la conexion
+        while True:
+            chunk = connection_socket.recv(buff_size)
+            if not chunk:
+                break
+            body_part += chunk
+    # si no hay content-length y no pedimos leer hasta el cierre asumimos que no hay body
+
+    return headers_part + body_part
 
 
 def contains_end_of_message(message_bytes, end_bytes):
@@ -120,6 +176,7 @@ if __name__ == "__main__":
             proxy_ip = config["proxy_ip"]
             proxy_port = config["proxy_port"]
             student_name = config["student_name"]
+            forbidden_words = config["forbidden_words"]
 
     else:
         print("Error: Debe ingresar la ruta del archivo JSON. ")
@@ -208,16 +265,28 @@ if __name__ == "__main__":
 
         ################### agregar al config.json: "student_name": "..." ###########################
 
-        # recibimos la respuesta del servidor
-        # y la enviamos directamente al cliente
-        while True:
+        # recibimos la respuesta completa del servidor real, respetando
+        # content-length o leyendo hasta el cierre si no viene ese header
+        response_message = receive_full_message(
+            prsv_socket,
+            buff_size,
+            end_of_message,
+            read_body_until_close=True
+        )
+        parsed_response = parse_HTTP_message(response_message)
 
-            response = prsv_socket.recv(4096)
+        # reemplazamos las palabras prohibidas en el body de la respuesta
+        parsed_response["body"] = replace_forbidden_words(
+            parsed_response["body"], forbidden_words
+        )
 
-            if not response:
-                break
+        # recalculamos content-length usando el largo en bytes 
+        # porque el reemplazo puede cambiar el largo del body
+        new_body_bytes = parsed_response["body"].encode()
+        parsed_response = set_content_length(parsed_response, len(new_body_bytes))
 
-            new_socket.sendall(response)
+        response_to_send = create_HTTP_message(parsed_response)
+        new_socket.sendall(response_to_send)
 
         # cerramos ambas conexiones
         prsv_socket.close()
