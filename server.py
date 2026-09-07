@@ -263,8 +263,6 @@ if __name__ == "__main__":
 
         prsv_socket.sendall(request_to_send)
 
-        ################### agregar al config.json: "student_name": "..." ###########################
-
         # recibimos la respuesta completa del servidor real, respetando
         # content-length o leyendo hasta el cierre si no viene ese header
         response_message = receive_full_message(
