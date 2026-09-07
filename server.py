@@ -130,9 +130,6 @@ def is_blocked(parsed_http, blocked_sites):
 
     site = site.rstrip("/")
 
-    print("SITE:", repr(site))
-    print("BLOCKED:", blocked_sites)
-
     for blocked in blocked_sites:
         if site == blocked.rstrip("/"):
             return True
